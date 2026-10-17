@@ -1,0 +1,9 @@
+# text files are stored with LF; Windows scripts keep CRLF
+* text=auto
+*.bat text eol=crlf
+*.png binary
+*.jpg binary
+*.wav binary
+*.mp4 binary
+*.m4a binary
+*.sqlite3 binary

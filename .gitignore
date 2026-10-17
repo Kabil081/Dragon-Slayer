@@ -1,0 +1,15 @@
+# private settings and the local database
+.env
+data/
+*.sqlite3
+*.sqlite3-*
+__pycache__/
+
+# your own film clips stay on your PC (they are not yours to publish)
+assets/media/*
+!assets/media/README.txt
+
+# local tool state and leftovers
+.claude/settings.local.json
+*.part.*
+.Rhistory

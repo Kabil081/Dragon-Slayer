@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dragonslayer: Rise of the North</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700;900&display=swap" rel="stylesheet">
+<script>
+  // Give every game file a fresh URL on each load (an import map adds
+  // ?v=...), so the browser can never mix cached old files with new ones.
+  (function () {
+    var v = Date.now();
+    var modules = ['src/core/AssetLoader.js', 'src/core/Audio.js', 'src/core/Camera.js', 'src/core/Clips.js', 'src/core/Game.js', 'src/core/Input.js', 'src/core/Online.js',
+      'src/core/Particles.js', 'src/core/Renderer.js', 'src/core/SaveManager.js', 'src/core/math.js',
+      'src/data/config.js', 'src/data/enemies.js', 'src/data/levels.js', 'src/data/progression.js',
+      'src/data/weapons.js', 'src/debug/Bot.js', 'src/debug/SmokeTest.js', 'src/game/Animator.js',
+      'src/game/Combat.js', 'src/game/Dragon.js', 'src/game/DragonAttacks.js', 'src/game/Duelist.js', 'src/game/Ending.js',
+      'src/game/Frostpiercer.js', 'src/game/Hazards.js', 'src/game/Saga.js',
+      'src/game/Level.js', 'src/game/LevelManager.js', 'src/game/Pickups.js', 'src/game/Player.js', 'src/game/ProgressionManager.js',
+      'src/game/Scorpion.js', 'src/game/Shop.js', 'src/game/Weapon.js', 'src/main.js', 'src/ui/HUD.js',
+      'src/ui/UI.js'];
+    var map = { imports: {} };
+    var base = location.pathname.replace(/[^/]*$/, '');
+    modules.forEach(function (m) { map.imports[base + m] = base + m + '?v=' + v; });
+    var s = document.createElement('script');
+    s.type = 'importmap';
+    s.textContent = JSON.stringify(map);
+    document.head.appendChild(s);
+    var css = document.createElement('link');
+    css.rel = 'stylesheet';
+    css.href = 'styles/main.css?v=' + v;
+    document.head.appendChild(css);
+    window.__GAME_ENTRY__ = base + 'src/main.js';
+  })();
+</script>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="ui" class="ui on"></div>
+<script>
+  // ES modules cannot load from file://, so explain how to start it.
+  if (location.protocol === 'file:') {
+    document.getElementById('ui').innerHTML =
+      '<div class="screen error"><div class="panel narrow"><h2>Start the game with a local server</h2>' +
+      '<p>Browsers block game modules opened straight from disk. Double-click <code>play.bat</code> ' +
+      'in the project folder and the game opens at <code>http://localhost:8642</code>.</p></div></div>';
+  }
+</script>
+<script type="module">
+  import(window.__GAME_ENTRY__);
+</script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+# Render blueprint: New > Blueprint > this repository. Render asks for the one
+# secret (DATABASE_URL: the Neon connection string); everything else is here.
+# Ohio is next to the Neon database (us-east-2), so queries take ~1 ms.
+services:
+  - type: web
+    name: dragonslayer
+    runtime: docker
+    plan: free
+    region: ohio
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: DS_TRUST_PROXY
+        value: "1"
+      - key: DS_COOKIE_SECURE
+        value: "1"
+      - key: DS_LOG
+        value: quiet
+      - key: DS_ALLOW_SIGNUP
+        value: "1"

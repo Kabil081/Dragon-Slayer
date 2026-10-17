@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dragonslayer Asset Preview</title>
+<style>
+  :root {
+    --bg: #12151c; --panel: #1b2029; --line: #2c3341; --text: #e6e1d6; --muted: #9aa3b2;
+    --accent: #c8a45a; --fire: #ff8a2a; --ice: #9fd6f0;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 Georgia, "Times New Roman", serif; }
+  header { padding: 20px 24px 8px; border-bottom: 1px solid var(--line); }
+  h1 { margin: 0; font-size: 22px; letter-spacing: .06em; }
+  h1 span { color: var(--accent); }
+  header p { margin: 4px 0 12px; color: var(--muted); font-size: 14px; }
+  nav { display: flex; gap: 6px; flex-wrap: wrap; }
+  nav button, .chips button, select {
+    background: var(--panel); color: var(--text); border: 1px solid var(--line);
+    padding: 6px 12px; border-radius: 6px; font: inherit; font-size: 14px; cursor: pointer; }
+  nav button.on, .chips button.on { border-color: var(--accent); color: var(--accent); }
+  main { padding: 20px 24px 40px; max-width: 1400px; }
+  section { display: none; } section.on { display: block; }
+  .row { display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-start; }
+  .stage { background: repeating-conic-gradient(#1e232d 0% 25%, #232934 0% 50%) 0 0 / 24px 24px;
+           border: 1px solid var(--line); border-radius: 8px; max-width: 100%; height: auto; }
+  .controls { min-width: 260px; flex: 1; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 14px; }
+  label { color: var(--muted); font-size: 13px; display: block; margin-top: 10px; }
+  .meta { font: 12px/1.6 Consolas, monospace; color: var(--muted); white-space: pre-wrap;
+          background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px;
+          text-align: center; }
+  .card img { max-height: 260px; max-width: 100%; }
+  .card div { margin-top: 6px; font-size: 14px; }
+  .wide img { width: 100%; border-radius: 8px; border: 1px solid var(--line); display: block; margin-bottom: 18px; }
+  canvas.full { width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--line); }
+  .warn { color: var(--fire); }
+</style>
+</head>
+<body>
+<header>
+  <h1>DRAGONSLAYER <span>Rise of the North</span> · Assets</h1>
+  <p>Preview of the generated sprites, weapons and Frozen Wall layers. Data comes from <code>assets/manifest.js</code>.</p>
+  <nav id="tabs"></nav>
+</header>
+<main>
+  <section id="warrior">
+    <div class="row">
+      <canvas id="wCanvas" class="stage" width="512" height="512"></canvas>
+      <div class="controls">
+        <label>Animation</label><div class="chips" id="wAnims"></div>
+        <label>Weapon</label><select id="wWeapon"></select>
+        <label><input type="checkbox" id="wAnchors" checked> Show pivot, hand and weapon tip</label>
+        <label><input type="checkbox" id="wTrail" checked> Sword trail (drawn in code from tip anchors)</label>
+        <label>Speed <input type="range" id="wSpeed" min="0.25" max="2" step="0.25" value="1"></label>
+        <div class="meta" id="wMeta"></div>
+      </div>
+    </div>
+  </section>
+  <section id="dragon">
+    <div class="row">
+      <canvas id="dCanvas" class="stage" width="768" height="512"></canvas>
+      <div class="controls">
+        <label>Dragon</label><select id="dPick"></select>
+        <label>Animation</label><div class="chips" id="dAnims"></div>
+        <label><input type="checkbox" id="dAnchors" checked> Show pivot and mouth anchor</label>
+        <label><input type="checkbox" id="dFire" checked> Fire particles (drawn in code)</label>
+        <div class="meta" id="dMeta"></div>
+      </div>
+    </div>
+  </section>
+  <section id="weapons"><div class="grid" id="wGrid"></div></section>
+  <section id="level">
+    <label>Background <select id="bgPick"></select></label>
+    <canvas id="lCanvas" class="full" width="1600" height="450"></canvas>
+    <p style="color:var(--muted)">Parallax test: all five layers tile horizontally. The warrior runs on <code>floor_y</code>; snow is drawn in code.</p>
+    <div class="grid" id="propGrid"></div>
+  </section>
+  <section id="concept" class="wide"><div id="cList"></div></section>
+</main>
+<script src="assets/manifest.js"></script>
+<script>
+const M = window.ASSET_MANIFEST;
+const A = p => 'assets/' + p;
+const imgCache = {};
+function img(p) {
+  if (!imgCache[p]) { const i = new Image(); i.src = A(p); imgCache[p] = i; }
+  return imgCache[p];
+}
+if (!M) document.querySelector('main').innerHTML =
+  '<p class="warn">assets/manifest.js not found. Run: python tools/generate_assets.py</p>';
+
+// ---------- tabs
+const TABS = [['warrior', 'Warrior'], ['dragon', 'Dragons'], ['weapons', 'Weapons'],
+              ['level', 'Backgrounds'], ['concept', 'Concept art']];
+const nav = document.getElementById('tabs');
+let current = 'warrior';
+function show(id) {
+  current = id;
+  document.querySelectorAll('section').forEach(s => s.classList.toggle('on', s.id === id));
+  nav.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.id === id));
+  try { localStorage.setItem('ds-tab', id); } catch (e) {}
+}
+TABS.forEach(([id, label]) => {
+  const b = document.createElement('button'); b.textContent = label; b.dataset.id = id;
+  b.onclick = () => show(id); nav.appendChild(b);
+});
+let saved = null; try { saved = localStorage.getItem('ds-tab'); } catch (e) {}
+show(TABS.some(t => t[0] === saved) ? saved : 'warrior');
+
+function chips(el, names, onPick) {
+  names.forEach((n, i) => {
+    const b = document.createElement('button'); b.textContent = n.replace('_', ' ');
+    b.onclick = () => { el.querySelectorAll('button').forEach(x => x.classList.remove('on'));
+                        b.classList.add('on'); onPick(n); };
+    if (i === 0) b.classList.add('on');
+    el.appendChild(b);
+  });
+}
+function dot(ctx, x, y, c, r = 4) { ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); }
+
+// ---------- warrior
+const W = M && M.warrior;
+const wState = { anim: 'idle', weapon: 'steel_sword', t: 0, trail: [] };
+if (W) {
+  chips(document.getElementById('wAnims'), Object.keys(W.animations), a => { wState.anim = a; wState.t = 0; wState.trail = []; });
+  const sel = document.getElementById('wWeapon');
+  W.variants.forEach(v => { const o = document.createElement('option'); o.value = v;
+    o.textContent = (M.weapons[v] && M.weapons[v].name) || 'Unarmed'; sel.appendChild(o); });
+  sel.onchange = () => { wState.weapon = sel.value; wState.trail = []; };
+}
+function drawWarrior(dt) {
+  const c = document.getElementById('wCanvas'), ctx = c.getContext('2d');
+  const an = W.animations[wState.anim];
+  wState.t += dt * an.fps * +document.getElementById('wSpeed').value;
+  let i = Math.floor(wState.t);
+  if (an.loop) i %= an.frames; else if (i >= an.frames + 6) { wState.t = 0; i = 0; wState.trail = []; }
+  i = Math.min(i, an.frames - 1);
+  const [fw, fh] = W.frame_size, s = c.width / fw;
+  const sheet = img(W.sheet_pattern.replace('{variant}', wState.weapon).replace('{anim}', wState.anim));
+  ctx.clearRect(0, 0, c.width, c.height);
+  const pf = an.per_frame[i];
+  const tip = pf.tips[wState.weapon];
+  if (document.getElementById('wTrail').checked && tip) {
+    const last = wState.trail[wState.trail.length - 1];
+    if (!last || last.i !== i) wState.trail.push({ i, hand: pf.hand, tip });
+    if (wState.trail.length > 4) wState.trail.shift();
+    if (wState.anim === 'attack' && wState.trail.length > 1) {
+      ctx.beginPath();
+      wState.trail.forEach((p, k) => k ? ctx.lineTo(p.tip[0] * s, p.tip[1] * s) : ctx.moveTo(p.tip[0] * s, p.tip[1] * s));
+      [...wState.trail].reverse().forEach(p => ctx.lineTo((p.hand[0] * .4 + p.tip[0] * .6) * s, (p.hand[1] * .4 + p.tip[1] * .6) * s));
+      ctx.fillStyle = 'rgba(220,235,255,0.28)'; ctx.fill();
+    }
+  }
+  if (sheet.complete) ctx.drawImage(sheet, i * fw, 0, fw, fh, 0, 0, c.width, c.height);
+  if (document.getElementById('wAnchors').checked) {
+    ctx.strokeStyle = 'rgba(200,164,90,.5)'; ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(0, W.pivot[1] * s); ctx.lineTo(c.width, W.pivot[1] * s); ctx.stroke(); ctx.setLineDash([]);
+    dot(ctx, W.pivot[0] * s, W.pivot[1] * s, '#c8a45a', 5);
+    dot(ctx, pf.hand[0] * s, pf.hand[1] * s, '#7fd17f');
+    if (tip) dot(ctx, tip[0] * s, tip[1] * s, '#ff6b6b');
+    const b = pf.bbox; ctx.strokeStyle = 'rgba(159,214,240,.35)';
+    ctx.strokeRect(b[0] * s, b[1] * s, (b[2] - b[0]) * s, (b[3] - b[1]) * s);
+  }
+  document.getElementById('wMeta').textContent =
+    `${wState.anim}  frame ${i + 1}/${an.frames}  ${an.fps} fps  loop=${an.loop}\n` +
+    `sheet: ${W.sheet_pattern.replace('{variant}', wState.weapon).replace('{anim}', wState.anim)}\n` +
+    `hand ${pf.hand}  angle ${pf.weapon_angle}\ntip ${tip || '-'}\nbbox ${pf.bbox}`;
+}
+
+// ---------- dragon
+const DRAGONS = M ? Object.keys(M).filter(k => k.startsWith('dragon_')) : [];
+let D = M && M[DRAGONS[0]];
+const dState = { anim: 'idle', t: 0, parts: [] };
+function dragonChips() {
+  const el = document.getElementById('dAnims');
+  el.innerHTML = '';
+  chips(el, Object.keys(D.animations), a => { dState.anim = a; dState.t = 0; });
+  dState.anim = 'idle'; dState.t = 0;
+}
+if (D) {
+  const sel = document.getElementById('dPick');
+  DRAGONS.forEach(k => { const o = document.createElement('option'); o.value = k; o.textContent = k.replace('dragon_', ''); sel.appendChild(o); });
+  sel.onchange = () => { D = M[sel.value]; dragonChips(); };
+  dragonChips();
+}
+function spawnFire(list, x, y, angleDeg, scale) {
+  const a = angleDeg * Math.PI / 180;
+  for (let k = 0; k < 6; k++) {
+    const sp = (260 + Math.random() * 160) * scale, j = (Math.random() - .5) * .35;
+    list.push({ x, y, vx: Math.sin(a + j) * sp, vy: Math.cos(a + j) * sp, life: 0, max: .55 + Math.random() * .3,
+                r: (6 + Math.random() * 6) * scale });
+  }
+}
+function drawFire(ctx, list, dt) {
+  ctx.globalCompositeOperation = 'lighter';
+  for (const p of list) {
+    p.life += dt; p.x += p.vx * dt; p.y += p.vy * dt - 30 * dt; p.vx *= .985; p.vy *= .985;
+    const t = p.life / p.max, r = p.r * (1 + t * 3.5);
+    const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+    g.addColorStop(0, `rgba(255,${230 - 150 * t | 0},${120 - 100 * t | 0},${.55 * (1 - t)})`);
+    g.addColorStop(1, 'rgba(255,60,0,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 7); ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+  for (let k = list.length - 1; k >= 0; k--) if (list[k].life > list[k].max) list.splice(k, 1);
+}
+function drawDragon(dt) {
+  const c = document.getElementById('dCanvas'), ctx = c.getContext('2d');
+  const an = D.animations[dState.anim];
+  dState.t += dt * an.fps;
+  let i = Math.floor(dState.t);
+  if (an.loop) i %= an.frames; else if (i >= an.frames + 5) { dState.t = 0; i = 0; }
+  i = Math.min(i, an.frames - 1);
+  const [fw, fh] = D.frame_size, s = c.width / fw;
+  const sheet = img(D.sheet_pattern.replace('{anim}', dState.anim));
+  const pf = an.per_frame[i];
+  ctx.clearRect(0, 0, c.width, c.height);
+  if (sheet.complete) ctx.drawImage(sheet, i * fw, 0, fw, fh, 0, 0, c.width, c.height);
+  if (document.getElementById('dFire').checked) {
+    if (pf.breathing_fire) spawnFire(dState.parts, pf.mouth[0] * s, pf.mouth[1] * s, pf.fire_angle, s);
+    drawFire(ctx, dState.parts, dt);
+  } else dState.parts.length = 0;
+  if (document.getElementById('dAnchors').checked) {
+    dot(ctx, D.pivot[0] * s, D.pivot[1] * s, '#c8a45a', 5);
+    dot(ctx, pf.mouth[0] * s, pf.mouth[1] * s, '#ff6b6b');
+    const a = pf.fire_angle * Math.PI / 180;
+    ctx.strokeStyle = '#ff6b6b'; ctx.beginPath(); ctx.moveTo(pf.mouth[0] * s, pf.mouth[1] * s);
+    ctx.lineTo((pf.mouth[0] + Math.sin(a) * 50) * s, (pf.mouth[1] + Math.cos(a) * 50) * s); ctx.stroke();
+  }
+  document.getElementById('dMeta').textContent =
+    `${dState.anim}  frame ${i + 1}/${an.frames}  ${an.fps} fps  loop=${an.loop}\n` +
+    `mouth ${pf.mouth}  fire_angle ${pf.fire_angle}  breathing_fire=${pf.breathing_fire}\nbbox ${pf.bbox}`;
+}
+
+// ---------- weapons + props + concept
+if (M) {
+  const g = document.getElementById('wGrid');
+  Object.entries(M.weapons).forEach(([id, w]) => {
+    g.insertAdjacentHTML('beforeend', `<div class="card"><img src="${A(w.file)}" alt="${w.name}">` +
+      `<div>${w.name}</div><div style="color:var(--muted);font-size:12px">${id}.png · ${w.size[0]}×${w.size[1]}</div></div>`);
+  });
+  const bgSel = document.getElementById('bgPick');
+  const showProps = () => {
+    const grid = document.getElementById('propGrid');
+    grid.innerHTML = '';
+    Object.entries(M.backgrounds[window.BG_ID].props).forEach(([id, p]) => {
+      const files = [p.file, ...Object.values(p.states || {})];
+      files.forEach(f => grid.insertAdjacentHTML('beforeend',
+        `<div class="card"><img src="${A(f)}" alt="${id}"><div>${f.split('/').pop()}</div></div>`));
+    });
+  };
+  Object.keys(M.backgrounds || {}).forEach(k => { const o = document.createElement('option'); o.value = k; o.textContent = k; bgSel.appendChild(o); });
+  window.BG_ID = bgSel.value;
+  bgSel.onchange = () => { window.BG_ID = bgSel.value; showProps(); };
+  if (window.BG_ID) showProps();
+  if (M.concept) Object.values(M.concept).forEach(p => {
+    document.getElementById('cList').insertAdjacentHTML('beforeend', `<img src="${A(p)}" alt="${p}">`);
+  });
+}
+
+// ---------- level parallax
+const lState = { x: 0, t: 0, snow: [] };
+function drawLevel(dt) {
+  const fz = M.backgrounds[window.BG_ID], c = document.getElementById('lCanvas'), ctx = c.getContext('2d');
+  const k = c.height / fz.size[1], tw = fz.size[0] * k;
+  lState.x += dt * 260; lState.t += dt;
+  ctx.fillStyle = '#10141c'; ctx.fillRect(0, 0, c.width, c.height);
+  const draw = (layer) => {
+    const im = img(layer.file); if (!im.complete) return;
+    const off = -((lState.x * layer.parallax) % tw);
+    for (let x = off; x < c.width; x += tw) ctx.drawImage(im, x, 0, tw, c.height);
+  };
+  fz.layers.slice(0, 4).forEach(draw);
+  draw(fz.layers[4]);
+  const an = W.animations.run, i = Math.floor(lState.t * an.fps) % an.frames;
+  const sheet = img(W.sheet_pattern.replace('{variant}', 'northern_longsword').replace('{anim}', 'run'));
+  const s = k * W.recommended_scale_1080p, fw = W.frame_size[0];
+  if (sheet.complete) ctx.drawImage(sheet, i * fw, 0, fw, fw, c.width * .3 - W.pivot[0] * s,
+                                    fz.floor_y * k - W.pivot[1] * s, fw * s, fw * s);
+  while (lState.snow.length < 160) lState.snow.push({ x: Math.random() * c.width, y: Math.random() * c.height,
+                                                      r: .6 + Math.random() * 1.8, v: 30 + Math.random() * 60 });
+  ctx.fillStyle = 'rgba(240,246,252,.8)';
+  for (const f of lState.snow) {
+    f.y += f.v * dt; f.x -= (f.v * .6 + 90) * dt;
+    if (f.y > c.height) f.y = -4; if (f.x < 0) f.x += c.width;
+    ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, 7); ctx.fill();
+  }
+}
+
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(.05, (now - last) / 1000); last = now;
+  if (M) {
+    if (current === 'warrior' && W) drawWarrior(dt);
+    if (current === 'dragon' && D) drawDragon(dt);
+    if (current === 'level' && M.backgrounds && W) drawLevel(dt);
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

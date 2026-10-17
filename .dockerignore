@@ -1,0 +1,18 @@
+# private: never in an image
+.env
+.env.*
+!.env.example
+data/
+*.sqlite3
+*.sqlite3-*
+
+# the player's own film clips stay on their PC
+assets/media/
+
+# build leftovers the game never loads (the art pipeline's single frames)
+assets/sprites/*/frames/
+
+.git/
+.claude/
+**/__pycache__/
+tools/assetgen/
