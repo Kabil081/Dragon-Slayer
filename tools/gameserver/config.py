@@ -47,17 +47,19 @@ class Settings:
         def flag(key, default):
             return get(key, default).strip().lower() in ('1', 'true', 'yes', 'on')
 
-        self.host = get('DS_HOST', '127.0.0.1')
+        # on a hosting service (it sets PORT) the defaults suit it: listen on every address, behind its proxy
+        hosted = bool(os.environ.get('PORT'))
+        self.host = get('DS_HOST', '0.0.0.0' if hosted else '127.0.0.1')
         self.port = int(get('PORT', '') or get('DS_PORT', '8642'))    # hosting services set PORT
         self.database_url = get('DATABASE_URL', '').strip()
         db_path = get('DS_DB_PATH', 'data/dragonslayer.sqlite3')
         self.db_path = db_path if os.path.isabs(db_path) else os.path.join(ROOT, db_path)
         self.session_days = max(1.0, float(get('DS_SESSION_DAYS', '30')))
         self.cookie_secure = get('DS_COOKIE_SECURE', 'auto').strip().lower()   # auto | 1 | 0
-        self.trust_proxy = flag('DS_TRUST_PROXY', '0')
+        self.trust_proxy = flag('DS_TRUST_PROXY', '1' if hosted else '0')
         self.allow_signup = flag('DS_ALLOW_SIGNUP', '1')
         self.max_live = int(get('DS_MAX_LIVE', '200'))
-        self.log = get('DS_LOG', 'all').strip().lower()      # all | quiet (only errors and API calls)
+        self.log = get('DS_LOG', 'quiet' if hosted else 'all').strip().lower()   # all | quiet (errors and API calls)
 
     @property
     def db_label(self):

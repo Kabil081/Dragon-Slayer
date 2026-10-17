@@ -13,3 +13,6 @@ assets/media/*
 .claude/settings.local.json
 *.part.*
 .Rhistory
+
+# the art pipeline's single frames: build leftovers the game never loads (kept on disk)
+assets/sprites/*/frames/

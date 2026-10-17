@@ -85,6 +85,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return fwd.split(',')[0].strip()
         return self.client_address[0]
 
+    def from_this_pc(self):
+        """A browser on this PC, not a visitor arriving through a proxy or tunnel on it."""
+        forwarded = any(h in self.headers for h in ('X-Forwarded-For', 'Forwarded', 'Cf-Connecting-Ip', 'X-Real-Ip'))
+        return self.client_address[0] in LOCAL and not forwarded
+
     def is_https(self):
         return self.settings.trust_proxy and self.headers.get('X-Forwarded-Proto', '').lower() == 'https'
 
@@ -101,7 +106,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         top = parts[0] if parts else ''
         if top not in PUBLIC:
             return False
-        if parts[:2] == ['assets', 'media'] and self.client_address[0] not in LOCAL:
+        if parts[:2] == ['assets', 'media'] and not self.from_this_pc():
             return False           # the player's own clips never leave this PC
         return True
 

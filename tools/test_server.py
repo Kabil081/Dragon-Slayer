@@ -112,6 +112,7 @@ class ServerTest(unittest.TestCase):
                     '/src/', '/assets/../.env', '/assets/x%5C..%5C..%5C.env', '/%2Eenv', '/DATA/x', '/.gitignore'):
             self.assertEqual(c.call('GET', bad)[0], 404, bad)
         self.assertEqual(c.call('HEAD', '/assets/media/README.txt')[0], 200)   # this PC may see its clips
+        self.assertEqual(c.call('HEAD', '/assets/media/README.txt', headers={'X-Forwarded-For': '203.0.113.9'})[0], 404)
 
     def test_caching_and_headers(self):
         c = http.client.HTTPConnection('127.0.0.1', self.port, timeout=10)
