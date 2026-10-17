@@ -64,6 +64,7 @@ export class UI {
   }
 
   render(name, html, cls = '') {
+    if (this.game.online && (name === 'leaderboard') !== (this.screen === 'leaderboard')) this.game.online.live(name === 'leaderboard');
     this.screen = name;
     this.root.className = 'ui on ' + cls;
     this.root.innerHTML = `<div class="screen ${name}">${html}</div>`;
@@ -73,6 +74,7 @@ export class UI {
   }
 
   hideAll() {
+    if (this.screen === 'leaderboard' && this.game.online) this.game.online.live(false);
     this.screen = null;
     this.root.className = 'ui';
     this.root.innerHTML = '';
@@ -129,6 +131,7 @@ export class UI {
   }
 
   result(res, okMsg) {
+    if (res.ok && this.game.online) this.game.online.syncNow();
     this.showArmory();
     this.toast(res.ok ? okMsg : res.reason);
   }
@@ -215,17 +218,13 @@ export class UI {
       if (kind === 'account' || kind === 'standing') {
         this.refreshChip();
         this.fillOnlineLine();
-        if (this.screen === 'account' && kind === 'standing') this.showAccount();
+        if (this.screen === 'account' && kind === 'standing') this.showAccount('profile');
       }
       if (kind === 'presence') {
         const el = this.root.querySelector('[data-online-count]');
         if (el) el.textContent = `${data} online`;
       }
-      if (kind === 'battle') {
-        if (this.screen === 'leaderboard') this.liveBattle(data);
-        else if (!data.mine && this.game.mode !== 'playing' && this.screen) this.liveNote(data);
-        if (data.mine) o.refreshMe();
-      }
+      if (kind === 'battle' && this.screen === 'leaderboard') this.liveBattle(data);
     });
   }
 
@@ -240,21 +239,6 @@ export class UI {
     const kind = !b.won ? 'fall' : b.clear ? 'clear' : 'win';
     return `<li class="${kind}${fresh ? ' fresh' : ''}">${ICONS[kind]}<div><p>${this.battleText(b)}</p>
       <span>Level ${b.level}${b.won && b.gold ? ` · +${num(b.gold)} gold` : ''} · <time data-at="${b.at}">${ago(b.at)}</time></span></div></li>`;
-  }
-
-  // Another player's battle, seen from a menu: a small card in the corner.
-  liveNote(b) {
-    let box = this.root.querySelector('.live-notes');
-    if (!box) {
-      box = document.createElement('ol');
-      box.className = 'live-notes feed';
-      this.root.appendChild(box);
-    }
-    box.insertAdjacentHTML('afterbegin', this.battleItem(b, true));
-    const li = box.firstElementChild;
-    setTimeout(() => li.classList.add('gone'), 5200);
-    setTimeout(() => li.remove(), 5800);
-    while (box.children.length > 3) box.lastElementChild.remove();
   }
 
   showLeaderboard(board = this.lb.board, level = this.lb.level) {
@@ -329,7 +313,7 @@ export class UI {
         ${o.player ? 'Win a battle and your name is first.' : 'Sign in and win a battle to be first.'}</p>`;
       return;
     }
-    const best = x => (level ? x.best[level] : x.totalTime);
+    const best = x => (level ? x.best : x.totalTime);
     const cols = {
       points: [['Points', x => num(x.points), 'big'], ['Gold', x => num(x.gold)], ['Wins · falls', x => `${x.wins} · ${x.losses}`]],
       gold: [['Gold won', x => num(x.gold), 'big'], ['Gold held', x => num(x.held)], ['Points', x => num(x.points)]],
@@ -351,7 +335,7 @@ export class UI {
     el.innerHTML = `<table class="lb">
       <thead><tr><th>#</th><th>Champion</th>${cols.map(c => `<th class="${c[2] || ''}">${c[0]}</th>`).join('')}</tr></thead>
       <tbody>${r.rows.map(row).join('')}</tbody>${mine}</table>
-      <p class="muted small lb-count">${num(r.total)} on this board · ${num(r.players)} champions in all</p>`;
+      <p class="muted small lb-count">${num(r.total)} on this board</p>`;
   }
 
   // A battle somewhere, while the board is open: the feed and the table move at once.
@@ -364,12 +348,16 @@ export class UI {
       while (el.children.length > 14) el.lastElementChild.remove();
       for (const t of el.querySelectorAll('time[data-at]')) t.textContent = ago(Number(t.dataset.at));
     }
-    clearTimeout(this.lb.timer);
-    this.lb.timer = setTimeout(() => { if (this.screen === 'leaderboard') this.loadBoard(); }, 300);
+    if (this.lb.timer) return;
+    this.lb.timer = setTimeout(() => { this.lb.timer = null; if (this.screen === 'leaderboard') this.loadBoard(); }, 4000);
   }
 
   showAccount(mode = null) {
     const o = this.game.online, g = this.game;
+    if (o && o.available && o.player && !o.player.expired && mode === null && this.screen !== 'account') {
+      o.refreshMe(true).then(() => { if (this.screen === 'account') this.showAccount('profile'); });
+    }
+    if (mode === 'profile') mode = null;
     if (this.screen !== 'account') this.back = this.screen === 'leaderboard' ? this.back : this.screen === 'title' || this.screen === null ? 'title' : 'campaign';
     if (!o || !o.available) {
       this.render('account', `<div class="panel narrow account">${this.offlineNote()}
@@ -400,7 +388,7 @@ export class UI {
             <div><b>${st.cleared || 0}</b><span>levels cleared · ${place('speed')}</span></div>
             <div><b>${(st.winScore || 0).toFixed(1)}%</b><span>win probability · ${place('wins')}</span></div>
           </div>
-          <p class="muted small">${st.wins || 0} wins · ${st.losses || 0} falls${st.of ? ` · ${num(st.of)} champions on the board` : ''}</p>
+          <p class="muted small">${st.wins || 0} wins · ${st.losses || 0} falls</p>
           <nav class="menu">
             <button data-action="leaderboard" data-primary>Leaderboard</button>
             <button data-action="signout">Sign out</button>
@@ -497,7 +485,7 @@ export class UI {
       return;
     }
     const st = p.standing || {}, rank = st.ranks && st.ranks.points;
-    el.innerHTML = `Leaderboard: <b>${num(st.points)}</b> points${rank ? ` · <b>#${rank}</b> of ${num(st.of)}` : ''}
+    el.innerHTML = `Leaderboard: <b>${num(st.points)}</b> points${rank ? ` · <b>#${rank}</b> on the board` : ''}
       <button class="linkish" data-action="leaderboard">View the board ›</button>`;
   }
 

@@ -251,15 +251,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if path == '/api/live' and method == 'GET':
                 return self.live()
             token = self.token()
-            me = svc.player_for(token)
+            pid = svc.pid_for(token)                    # from memory after the first look-up
 
             def need():
-                if not me:
+                if not pid:
                     raise ApiError(401, 'Sign in first.')
-                return me
+                return pid
             if path == '/api/health' and method == 'GET':
                 return self.send_json(200, svc.health(deep=arg('deep') == '1'))
             if path == '/api/me' and method == 'GET':
+                me = svc.player(pid, full=arg('full') == '1') if pid else None
                 return self.send_json(200, {'player': me, 'signup': self.settings.allow_signup})
             if path == '/api/signup' and method == 'POST':
                 b = self.body()
@@ -273,19 +274,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 svc.logout(token)
                 return self.send_json(200, {'ok': True}, self.session_cookie(None))
             if path == '/api/account' and method == 'DELETE':
-                svc.delete_account(need()['id'], self.body().get('password'))
+                svc.delete_account(need(), self.body().get('password'))
                 svc.logout(token)
                 return self.send_json(200, {'ok': True}, self.session_cookie(None))
             if path == '/api/save' and method == 'GET':
-                return self.send_json(200, svc.get_save(need()['id']) or {'save': None})
+                return self.send_json(200, svc.get_save(need()) or {'save': None})
             if path == '/api/save' and method == 'PUT':
                 b = self.body()
-                return self.send_json(200, svc.put_save(need()['id'], b.get('save'), b.get('savedAt')))
+                return self.send_json(200, svc.put_save(need(), b.get('save'), b.get('savedAt')))
             if path == '/api/battle' and method == 'POST':
-                return self.send_json(200, svc.record_battle(need()['id'], self.body()))
+                return self.send_json(200, svc.record_battle(need(), self.body()))
             if path == '/api/leaderboard' and method == 'GET':
-                return self.send_json(200, svc.leaderboard(arg('board', 'points'), arg('level', '0'),
-                                                           me['id'] if me else None))
+                return self.send_json(200, svc.leaderboard(arg('board', 'points'), arg('level', '0'), pid))
             if path == '/api/feed' and method == 'GET':
                 return self.send_json(200, {'feed': svc.feed(arg('limit', '20'))})
             raise ApiError(404, 'No such call.')

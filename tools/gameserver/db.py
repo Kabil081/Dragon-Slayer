@@ -9,6 +9,8 @@ import threading
 import time
 import urllib.parse
 
+# Only what the boards need: each player's totals (one row, updated per battle)
+# and their best clear time per level. No battle is stored on its own.
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS players (
   id {pk},
@@ -27,28 +29,29 @@ CREATE TABLE IF NOT EXISTS sessions (
   expires {real} NOT NULL
 );
 CREATE INDEX IF NOT EXISTS sessions_player ON sessions(player_id);
-CREATE TABLE IF NOT EXISTS saves (
-  player_id {fk} PRIMARY KEY REFERENCES players(id) ON DELETE CASCADE,
-  data TEXT NOT NULL,
-  saved_at {real} NOT NULL
-);
-CREATE TABLE IF NOT EXISTS battles (
-  id {pk},
+CREATE TABLE IF NOT EXISTS best_times (
   player_id {fk} NOT NULL REFERENCES players(id) ON DELETE CASCADE,
-  client_id TEXT NOT NULL,
   level INTEGER NOT NULL,
-  boss TEXT NOT NULL,
-  won INTEGER NOT NULL,
-  clear INTEGER NOT NULL,
   time {real} NOT NULL,
-  gold INTEGER NOT NULL,
-  xp INTEGER NOT NULL,
-  flawless INTEGER NOT NULL,
-  created {real} NOT NULL,
-  UNIQUE (player_id, client_id)
+  PRIMARY KEY (player_id, level)
 );
-CREATE INDEX IF NOT EXISTS battles_player ON battles(player_id);
-CREATE INDEX IF NOT EXISTS battles_created ON battles(created);
+CREATE INDEX IF NOT EXISTS best_times_level ON best_times(level, time)
+"""
+
+# columns added to players by schema 2 (the totals and the cloud save)
+PLAYER_COLUMNS = [
+    ('save_data', 'TEXT'), ('saved_at', '{real}'), ('battles', 'INTEGER NOT NULL DEFAULT 0'),
+    ('wins', 'INTEGER NOT NULL DEFAULT 0'), ('gold_won', 'INTEGER NOT NULL DEFAULT 0'),
+    ('xp_won', 'INTEGER NOT NULL DEFAULT 0'), ('points', 'INTEGER NOT NULL DEFAULT 0'),
+    ('flawless', 'INTEGER NOT NULL DEFAULT 0'), ('win_score', '{real} NOT NULL DEFAULT 0'),
+    ('cleared', 'INTEGER NOT NULL DEFAULT 0'), ('total_best', '{real} NOT NULL DEFAULT 0'),
+    ('recent_ids', "TEXT NOT NULL DEFAULT ''"),
+]
+PLAYER_INDEXES = """
+CREATE INDEX IF NOT EXISTS players_points ON players(points);
+CREATE INDEX IF NOT EXISTS players_gold ON players(gold_won);
+CREATE INDEX IF NOT EXISTS players_wins ON players(win_score);
+CREATE INDEX IF NOT EXISTS players_speed ON players(cleared, total_best)
 """
 
 DIALECTS = {
@@ -70,9 +73,77 @@ class Database:
         self.conn = None
         self._connect()
         with self.lock:
-            for stmt in SCHEMA.format(**DIALECTS[self.kind]).split(';'):
-                if stmt.strip():
-                    self._run(stmt, ())
+            self.migrate()
+
+    # ------------------------------------------------------------ schema
+    def statements(self, text):
+        return [st for st in text.format(**DIALECTS[self.kind]).split(';') if st.strip()]
+
+    def has_table(self, name):
+        if self.kind == 'sqlite':
+            sql = "SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = ?"
+        else:
+            sql = 'SELECT 1 AS x FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = ?'
+        return bool(self._run(sql, (name,))[0])
+
+    def columns(self, table):
+        if self.kind == 'sqlite':
+            return {r['name'] for r in self._run(f'PRAGMA table_info({table})', ())[0]}
+        return {r['column_name'] for r in self._run('SELECT column_name FROM information_schema.columns '
+                                                   'WHERE table_schema = current_schema() AND table_name = ?', (table,))[0]}
+
+    def migrate(self):
+        """Create the tables, add schema 2's columns, and fold any old per-battle
+        rows and saves (schema 1) into the players' totals, once, in one transaction."""
+        for st in self.statements(SCHEMA):
+            self._run(st, ())
+        have = self.columns('players')
+        for name, kind in PLAYER_COLUMNS:
+            if name not in have:
+                self._run(f'ALTER TABLE players ADD COLUMN {name} {kind.format(**DIALECTS[self.kind])}', ())
+        for st in self.statements(PLAYER_INDEXES):
+            self._run(st, ())
+        if not (self.has_table('battles') or self.has_table('saves')):
+            return
+        self._run('BEGIN', ())
+        try:
+            if self.kind == 'postgres':
+                self._run('SELECT pg_advisory_xact_lock(4242)', ())      # one server migrates; the others wait
+            if self.has_table('saves'):
+                for r in self._run('SELECT player_id, data, saved_at FROM saves', ())[0]:
+                    self._run('UPDATE players SET save_data = ?, saved_at = ? WHERE id = ?',
+                              (r['data'], r['saved_at'], r['player_id']))
+                self._run('DROP TABLE saves', ())
+            if self.has_table('battles'):
+                from .service import wilson
+                totals = self._run('SELECT player_id, COUNT(*) AS n, SUM(won) AS w, SUM(gold) AS g, SUM(xp) AS x, '
+                                   'SUM(flawless) AS f FROM battles GROUP BY player_id', ())[0]
+                best = self._run('SELECT player_id, level, MIN(time) AS t FROM battles WHERE clear = 1 '
+                                 'GROUP BY player_id, level', ())[0]
+                per = {}
+                for b in best:
+                    self._run('INSERT INTO best_times (player_id, level, time) VALUES (?, ?, ?) '
+                              'ON CONFLICT (player_id, level) DO UPDATE SET time = excluded.time '
+                              'WHERE excluded.time < best_times.time', (b['player_id'], b['level'], float(b['t'])))
+                    per.setdefault(b['player_id'], []).append(float(b['t']))
+                for t in totals:
+                    n, w = int(t['n']), int(t['w'] or 0)
+                    g, x, f = int(t['g'] or 0), int(t['x'] or 0), int(t['f'] or 0)
+                    times = per.get(t['player_id'], [])
+                    self._run('UPDATE players SET battles = battles + ?, wins = wins + ?, gold_won = gold_won + ?, '
+                              'xp_won = xp_won + ?, points = points + ?, flawless = flawless + ? WHERE id = ?',
+                              (n, w, g, x, g + x, f, t['player_id']))
+                    row = self._run('SELECT battles, wins FROM players WHERE id = ?', (t['player_id'],))[0][0]
+                    agg = self._run('SELECT COUNT(*) AS c, COALESCE(SUM(time), 0) AS s FROM best_times '
+                                    'WHERE player_id = ?', (t['player_id'],))[0][0]
+                    self._run('UPDATE players SET win_score = ?, cleared = ?, total_best = ? WHERE id = ?',
+                              (round(100 * wilson(int(row['wins']), int(row['battles'])), 1), int(agg['c']),
+                               round(float(agg['s']), 1), t['player_id']))
+                self._run('DROP TABLE battles', ())
+            self._run('COMMIT', ())
+        except Exception:
+            self._run('ROLLBACK', ())
+            raise
 
     # ------------------------------------------------------------ connection
     def _connect(self):

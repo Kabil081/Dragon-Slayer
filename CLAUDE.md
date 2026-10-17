@@ -59,7 +59,9 @@ src/core/           engine, no game rules
                     Audio.line, the funeral bell `fallen`); aegon_theme falls back to the 'aegon' score.
   Input.js          key state + buffering (KEYS in data/config.js); ignores keys typed into form fields
   Online.js         accounts (own save slot per account; a new account adopts the guest save), cloud save push (newer wins),
-                    battle queue (localStorage, retried; guests send nothing), leaderboard/feed calls, EventSource live news
+                    battle queue (localStorage, retried; guests send nothing), leaderboard/feed calls. Lean by design:
+                    live (EventSource) only while the leaderboard is open; save pushed at level end, armory, sign-out,
+                    page hide (or 45 s after a change), never twice unchanged; full standing only on the account screen
   AssetLoader.js    loads every manifest image (16 at a time, 2 retries); refuses to start and lists missing files
   Renderer.js       1920x1080 letterboxed canvas; drawFrame(tint, flash, aura); parallax layers
   Camera.js         follow + look-ahead + bias toward boss (level `camera` config); centres narrow arenas
@@ -101,7 +103,7 @@ tools/assetgen/     common.py warrior.py weapons.py dragon.py backgrounds.py wal
 tools/voice_lines.py  the game's voice lines: the two ending lines and "Dracarys!" (synthetic speech, processed)
 tools/add_clip.py   cuts a moment from the owner's own file into an assets/media slot (ffmpeg)
 tools/serve.py      the server: game files (allow-list) + /api/* (me signup login logout account save battle leaderboard feed live health)
-tools/gameserver/   config.py (.env) db.py (SQLite | Postgres, ? placeholders) service.py (accounts, saves, battles, boards) live.py (SSE hub)
+tools/gameserver/   config.py (.env) db.py (SQLite | Postgres, ? placeholders; schema 2 + one-time migration) service.py (accounts, saves, battles, boards) live.py (SSE hub)
 tools/test_server.py  server tests
 ```
 
@@ -211,6 +213,10 @@ Sprite notes:
   - Sign-up: name 3–16 characters (unique, any case), password at least 8 (scrypt hash). Session = HttpOnly SameSite=Strict cookie (30 days).
     Changes need a JSON body from the same origin. Rate limits on sign-up, sign-in and wrong passwords.
   - Every boss fight is a battle (`ProgressionManager.onBattle`): a level clear, a fall, and in L7 each boss plus the final clear.
+    **No battle is stored** (owner request): each player row keeps totals (battles, wins, gold/XP won, points, flawless,
+    win_score, cleared, total_best, last 12 battle ids for retries) plus its cloud save; `best_times` keeps one best time per level.
+    The feed of recent battles lives in server memory only. Sessions are cached in memory; boards are top-50 SQL reads cached 15 s;
+    a rank is one COUNT. Art: boot loads ~30 small images; the warrior's sheets load per carried weapon (`warrior:<weapon>` groups).
     Only signed-in players' battles go to the board. The server checks them (ranges, a clear lasts at least 10 s, a fall pays nothing, ids count once).
   - Boards: points (gold + XP won), gold won, speed (best clear per level; All = most levels, then lowest total), win probability
     (Wilson 95% lower bound of wins / battles, shown 0–100). Each battle is pushed live to every open game (the board and feed move; menus show a note).
@@ -255,4 +261,5 @@ Sprite notes:
 - Server: no-cache + Last-Modified, gzip text, CSP/HSTS, DS_LOG=quiet, SIGTERM, shallow /api/health (?deep=1 hits DB), Neon connect retries.
 - GitHub: https://github.com/Kabil081/Dragon-Slayer (public). `assets/sprites/*/frames/` is git-ignored (build leftovers). Pushes over this PC's
   connection fail above ~30 MB: commit art in small batches. With `PORT` set the server defaults to 0.0.0.0, trusted proxy, quiet logs.
-- Not yet verified: `docker build` (Docker Desktop would not start here). Next: push to GitHub (owner), Render Blueprint (owner pastes DATABASE_URL). See HOSTING.md.
+- Live: https://dragon-slayer-k4js.onrender.com (Render, Python service, start `python tools/serve.py`, DATABASE_URL = Neon).
+- Not yet verified: `docker build` (Docker Desktop would not start here).

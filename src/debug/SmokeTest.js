@@ -1610,7 +1610,7 @@ async function onlineChecks(T) {
     wins: 7, losses: rank, battles: 7 + rank, winRate: 80, winScore: 60 - rank, cleared: 7, totalTime: 2000 + rank, best: { 1: 90 } });
   game.online = {
     available: true, signupOpen: true, online: 3, player: { id: 2, name: 'Bran', standing: { points: 800, ranks: { points: 2 } } },
-    on() {}, refreshMe() {},
+    on() {}, refreshMe() {}, live() {},
     leaderboard: async () => ({ board: 'points', level: 0, total: 4, players: 4, online: 3,
                                  rows: [row(1, 'Arya'), row(2, 'Bran', true), row(3, 'Sansa'), row(4, 'Rickon')], me: row(2, 'Bran', true) }),
     feed: async () => [{ name: 'Arya', level: 5, boss: 'vhagar', won: true, clear: true, time: 600, gold: 400, at: Date.now() / 1000 - 90 }],
@@ -1628,7 +1628,7 @@ async function onlineChecks(T) {
         game.ui.screen === 'leaderboard' && rows === 4 && medals === 3 && !!mine && /Bran/.test(mine.textContent) &&
         !!feedFirst && /Vhagar/.test(feedFirst.textContent) && !!fresh && /fell to.*Balerion/.test(fresh.textContent),
         `rows ${rows}, medals ${medals}`);
-  game.online = { available: false, on() {} };
+  game.online = { available: false, on() {}, live() {} };
   game.ui.showLeaderboard('points', 0);
   const offline = /play\.bat/.test(root.textContent);
   game.ui.showAccount();

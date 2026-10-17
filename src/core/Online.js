@@ -8,6 +8,11 @@ import { KEY, SaveManager, defaultSave } from './SaveManager.js';
 // Each account keeps its own save slot in this browser; signing out returns
 // to the guest save. Battles wait in a queue until the server has them, so a
 // dropped connection loses nothing.
+//
+// Light on the server: nothing is fetched until a screen shows it (the board,
+// the account), the live connection is open only while the leaderboard is,
+// and the cloud save goes up only at the moments that matter (a level's end,
+// the armory, signing out, leaving the page), never twice unchanged.
 
 export class OnlineError extends Error {
   constructor(message, status = 0) {
@@ -57,8 +62,8 @@ export class Online {
     }
   }
 
-  async request(method, path, body) {
-    const opt = { method, credentials: 'same-origin', cache: 'no-store', headers: {} };
+  async request(method, path, body, { keepalive = false } = {}) {
+    const opt = { method, credentials: 'same-origin', cache: 'no-store', headers: {}, keepalive };
     if (body !== undefined) {
       opt.headers['Content-Type'] = 'application/json';
       opt.body = JSON.stringify(body);
@@ -83,10 +88,13 @@ export class Online {
       this.available = true;
       this.signupOpen = r.signup !== false;
       if (r.player) await this.enter(r.player, false);
-      this.connectLive();
       this.flush();
-      setInterval(() => { this.flush(); if (this.dirty) this.pushSave(); }, 30000);
+      setInterval(() => { this.flush(); if (this.dirty) this.pushSave().catch(() => {}); }, 120000);
       window.addEventListener('online', () => this.flush());
+      // leaving or hiding the page: the last changes go up (a request that outlives the page)
+      const away = () => { if (this.dirty) this.pushSave({ keepalive: true }).catch(() => {}); };
+      window.addEventListener('pagehide', away);
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') away(); });
     } catch (e) {
       this.available = false;
       console.info('Online features are off:', e.message, '(start the game with play.bat or tools/serve.py)');
@@ -148,10 +156,11 @@ export class Online {
     this.emit('account', null);
   }
 
-  async refreshMe() {
+  // `full`: the place on every board (asked for only when the account screen opens)
+  async refreshMe(full = false) {
     if (!this.available || !this.player) return null;
     try {
-      const r = await this.request('GET', '/api/me');
+      const r = await this.request('GET', `/api/me${full ? '?full=1' : ''}`);
       if (r.player) { this.player = r.player; this.emit('standing', r.player.standing); }
       else this.expire();
     } catch (e) { /* keep what we have */ }
@@ -159,20 +168,30 @@ export class Online {
   }
 
   // ------------------------------------------------------------ the cloud copy of the save
+  // Every local save marks the cloud copy out of date; it goes up a while
+  // later (or at once at the moments that matter: syncNow).
   schedulePush() {
     if (!this.player) return;
     this.dirty = true;
     clearTimeout(this.pushTimer);
-    this.pushTimer = setTimeout(() => this.pushSave().catch(() => {}), 1500);
+    this.pushTimer = setTimeout(() => this.pushSave().catch(() => {}), 45000);
   }
 
-  async pushSave() {
+  syncNow() {
+    if (this.dirty) this.pushSave().catch(() => {});
+  }
+
+  async pushSave({ keepalive = false } = {}) {
     if (!this.player || this.player.expired || !this.available) return;
     clearTimeout(this.pushTimer);
     const d = this.game.progression.data;
+    const { savedAt, ...rest } = d;
+    const text = JSON.stringify(rest);
     this.dirty = false;
+    if (text === this.lastPushed) return;          // nothing new since the last one
     try {
-      await this.request('PUT', '/api/save', { save: d, savedAt: d.savedAt || Date.now() });
+      await this.request('PUT', '/api/save', { save: d, savedAt: savedAt || Date.now() }, { keepalive });
+      this.lastPushed = text;
     } catch (e) {
       this.dirty = true;
       if (e.status === 401) this.expire();
@@ -243,8 +262,13 @@ export class Online {
 
   feed(limit = 20) { return this.request('GET', `/api/feed?limit=${limit}`).then(r => r.feed); }
 
-  connectLive() {
-    if (this.source || typeof EventSource === 'undefined') return;
+  // The live connection: open only while someone is looking at the board.
+  live(on) {
+    if (!on) {
+      if (this.source) { this.source.close(); this.source = null; }
+      return;
+    }
+    if (this.source || !this.available || typeof EventSource === 'undefined') return;
     const src = this.source = new EventSource('/api/live');
     const count = e => { try { this.online = JSON.parse(e.data).online; this.emit('presence', this.online); } catch (x) { /* */ } };
     src.addEventListener('hello', count);

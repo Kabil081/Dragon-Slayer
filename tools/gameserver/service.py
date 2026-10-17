@@ -1,6 +1,9 @@
 """Accounts, cloud saves, battles and leaderboards. No HTTP here: serve.py
 turns requests into these calls, and the tests call them directly.
 
+Only totals are kept: per player the battles, wins, gold and XP won, flawless
+wins, and the best clear time of each level; never a row per battle.
+
 Scores come from the game in the player's browser, so a determined cheat
 could send false ones; the checks below keep honest mistakes and casual
 tampering out. It is a fan game, not a tournament."""
@@ -109,6 +112,11 @@ class RateLimit:
 
 
 class Service:
+    """Kept light on the database: sign-ins are remembered in memory, the boards
+    are read from indexed columns (top 50) and kept for a few seconds, a battle
+    is one update of the player's totals, and the feed of recent battles lives
+    in memory only."""
+
     def __init__(self, settings, db, live=None, clock=time.time):
         self.settings = settings
         self.db = db
@@ -119,8 +127,10 @@ class Service:
         self.fails = RateLimit(8, 600, clock)            # wrong passwords per name
         self.battle_rate = RateLimit(60, 600, clock)     # battles per player
         self.version = 0                                 # bumps on every change the boards show
-        self.cache = None
-        self.cache_lock = threading.Lock()
+        self.boards = {}                                 # (board, level) -> (version, time, rows, total)
+        self.sessions = {}                               # token hash -> (player id, expires)
+        self.recent = collections.deque(maxlen=30)       # the feed: recent battles, never stored
+        self.lock = threading.Lock()
         self.dummy_hash = hash_password(secrets.token_hex(8))
 
     # ------------------------------------------------------------ accounts
@@ -141,9 +151,18 @@ class Service:
     def _new_session(self, pid):
         token = secrets.token_urlsafe(32)
         now = self.clock()
+        exp = now + self.settings.session_days * 86400
+        h = token_hash(token)
         self.db.execute('INSERT INTO sessions (token_hash, player_id, created, expires) VALUES (?, ?, ?, ?)',
-                        (token_hash(token), pid, now, now + self.settings.session_days * 86400))
+                        (h, pid, now, exp))
+        self._remember(h, pid, exp)
         return token
+
+    def _remember(self, h, pid, exp):
+        with self.lock:
+            if len(self.sessions) > 20_000:
+                self.sessions.clear()
+            self.sessions[h] = (pid, exp)
 
     def signup(self, name, password, ip='?'):
         if not self.settings.allow_signup:
@@ -184,42 +203,59 @@ class Service:
 
     def logout(self, token):
         if token:
-            self.db.execute('DELETE FROM sessions WHERE token_hash = ?', (token_hash(token),))
+            h = token_hash(token)
+            with self.lock:
+                self.sessions.pop(h, None)
+            self.db.execute('DELETE FROM sessions WHERE token_hash = ?', (h,))
 
-    def player_for(self, token):
-        """The signed-in player for a session cookie, or None."""
+    def pid_for(self, token):
+        """The signed-in player's id for a session cookie, or None. Usually from memory."""
         if not token or len(token) > 100:
             return None
-        row = self.db.one('SELECT player_id, expires FROM sessions WHERE token_hash = ?', (token_hash(token),))
-        if not row:
-            return None
-        if row['expires'] < self.clock():
+        h = token_hash(token)
+        hit = self.sessions.get(h)
+        if hit is None:
+            row = self.db.one('SELECT player_id, expires FROM sessions WHERE token_hash = ?', (h,))
+            if not row:
+                return None
+            hit = (row['player_id'], row['expires'])
+            self._remember(h, *hit)
+        if hit[1] < self.clock():
             self.logout(token)
             return None
-        return self.player(row['player_id'])
+        return hit[0]
 
-    def player(self, pid):
-        row = self.db.one('SELECT id, name, warrior_level, gold_held, created FROM players WHERE id = ?', (pid,))
+    def player_for(self, token):
+        pid = self.pid_for(token)
+        return self.player(pid) if pid else None
+
+    def player(self, pid, full=False):
+        """Name, warrior level, gold held, points and place; `full` adds every board's place."""
+        row = self.db.one('SELECT id, name, warrior_level, gold_held, created, battles, wins, gold_won, xp_won, points, '
+                          'win_score, cleared, total_best FROM players WHERE id = ?', (pid,))
         if not row:
             return None
         return {'id': row['id'], 'name': row['name'], 'level': row['warrior_level'], 'gold': row['gold_held'],
-                'created': row['created'], 'standing': self.standing(row['id'])}
+                'created': row['created'], 'standing': self._standing(row, full)}
 
     def delete_account(self, pid, password):
         row = self.db.one('SELECT pass_hash FROM players WHERE id = ?', (pid,))
         if not row or not check_password(str(password or ''), row['pass_hash']):
             raise ApiError(401, 'Wrong password.')
-        for t in ('sessions', 'saves', 'battles'):
+        with self.lock:
+            for h in [h for h, v in self.sessions.items() if v[0] == pid]:
+                del self.sessions[h]
+        for t in ('sessions', 'best_times'):
             self.db.execute(f'DELETE FROM {t} WHERE player_id = ?', (pid,))
         self.db.execute('DELETE FROM players WHERE id = ?', (pid,))
         self._changed()
 
     # ------------------------------------------------------------ cloud save
     def get_save(self, pid):
-        row = self.db.one('SELECT data, saved_at FROM saves WHERE player_id = ?', (pid,))
-        if not row:
+        row = self.db.one('SELECT save_data, saved_at FROM players WHERE id = ?', (pid,))
+        if not row or row['save_data'] is None:
             return None
-        return {'save': json.loads(row['data']), 'savedAt': row['saved_at']}
+        return {'save': json.loads(row['save_data']), 'savedAt': row['saved_at']}
 
     def put_save(self, pid, save, saved_at=None):
         if not isinstance(save, dict):
@@ -230,20 +266,17 @@ class Service:
         at = saved_at if isinstance(saved_at, (int, float)) and math.isfinite(saved_at) else self.clock() * 1000
         num = lambda v, lo, hi, d: int(v) if isinstance(v, (int, float)) and math.isfinite(v) and lo <= v <= hi else d
         level, gold = num(save.get('level'), 1, 999, 1), num(save.get('gold'), 0, 10 ** 9, 0)
-        n = self.db.execute('INSERT INTO saves (player_id, data, saved_at) VALUES (?, ?, ?) '
-                            'ON CONFLICT (player_id) DO UPDATE SET data = excluded.data, saved_at = excluded.saved_at '
-                            'WHERE saves.saved_at <= excluded.saved_at', (pid, text, at))
-        if not n:                       # the server already has a newer save (another browser)
-            return {'savedAt': at, 'stale': True}
-        old = self.db.one('SELECT warrior_level, gold_held FROM players WHERE id = ?', (pid,))
-        if old and (old['warrior_level'] != level or old['gold_held'] != gold):
-            self.db.execute('UPDATE players SET warrior_level = ?, gold_held = ?, last_seen = ? WHERE id = ?',
-                            (level, gold, self.clock(), pid))
+        # one statement; a save from an older copy (another browser) never overwrites a newer one
+        n = self.db.execute('UPDATE players SET save_data = ?, saved_at = ?, warrior_level = ?, gold_held = ?, last_seen = ? '
+                            'WHERE id = ? AND (saved_at IS NULL OR saved_at <= ?)',
+                            (text, at, level, gold, self.clock(), pid, at))
+        if n:
             self._changed()
-        return {'savedAt': at, 'stale': False}
+        return {'savedAt': at, 'stale': not n}
 
     # ------------------------------------------------------------ battles
     def record_battle(self, pid, b):
+        """A battle's end changes the player's totals (and maybe a best time). Nothing else is kept."""
         if not isinstance(b, dict):
             raise ApiError(400, 'A battle is an object.')
         cid = str(b.get('id', ''))
@@ -267,121 +300,153 @@ class Service:
             raise ApiError(400, 'A fall pays nothing.')
         if not self.battle_rate.hit(pid):
             raise ApiError(429, 'Too many battles reported. Slow down.')
-        now = self.clock()
-        n = self.db.execute('INSERT INTO battles (player_id, client_id, level, boss, won, clear, time, gold, xp, flawless, created) '
-                            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (player_id, client_id) DO NOTHING',
-                            (pid, cid, level, boss, int(won), int(clear), float(t), gold, xp, int(flawless), now))
-        self.db.execute('UPDATE players SET last_seen = ? WHERE id = ?', (now, pid))
-        if n:                                           # a retry of the same battle counts once
-            self._changed()
-            if self.live:
-                name = self.db.one('SELECT name FROM players WHERE id = ?', (pid,))['name']
-                self.live.publish('battle', {'name': name, 'level': level, 'boss': boss, 'won': won, 'clear': clear,
-                                             'time': round(float(t), 1), 'gold': gold, 'at': now,
-                                             'version': self.version})
-        return {'recorded': bool(n), 'standing': self.standing(pid)}
+        t = round(float(t), 1)
+        with self.db.lock:
+            row = self.db.one('SELECT name, battles, wins, gold_won, xp_won, points, flawless, win_score, cleared, total_best, '
+                              'recent_ids, (SELECT time FROM best_times WHERE player_id = ? AND level = ?) AS best '
+                              'FROM players WHERE id = ?', (pid, level, pid))
+            if not row:
+                raise ApiError(401, 'Sign in first.')
+            seen = [x for x in (row['recent_ids'] or '').split(',') if x]
+            if cid in seen:                                  # a retry of the same battle counts once
+                return {'recorded': False, 'standing': self._standing(row)}
+            n, w = row['battles'] + 1, row['wins'] + int(won)
+            cleared, total = row['cleared'], float(row['total_best'])
+            if clear and (row['best'] is None or t < row['best']):
+                self.db.execute('INSERT INTO best_times (player_id, level, time) VALUES (?, ?, ?) '
+                                'ON CONFLICT (player_id, level) DO UPDATE SET time = excluded.time', (pid, level, t))
+                if row['best'] is None:
+                    cleared, total = cleared + 1, total + t
+                else:
+                    total = total - float(row['best']) + t
+            new = {'battles': n, 'wins': w, 'gold_won': row['gold_won'] + gold, 'xp_won': row['xp_won'] + xp,
+                   'flawless': row['flawless'] + int(flawless), 'win_score': round(100 * wilson(w, n), 1),
+                   'cleared': cleared, 'total_best': round(total, 1)}
+            new['points'] = new['gold_won'] + new['xp_won']
+            self.db.execute('UPDATE players SET battles = ?, wins = ?, gold_won = ?, xp_won = ?, points = ?, flawless = ?, '
+                            'win_score = ?, cleared = ?, total_best = ?, recent_ids = ?, last_seen = ? WHERE id = ?',
+                            (new['battles'], new['wins'], new['gold_won'], new['xp_won'], new['points'], new['flawless'],
+                             new['win_score'], new['cleared'], new['total_best'], ','.join((seen + [cid])[-12:]),
+                             self.clock(), pid))
+        self._changed()
+        event = {'name': row['name'], 'level': level, 'boss': boss, 'won': won, 'clear': clear, 'time': t,
+                 'gold': gold, 'at': self.clock()}
+        self.recent.appendleft(event)
+        if self.live:
+            self.live.publish('battle', {**event, 'version': self.version})
+        return {'recorded': True, 'standing': self._standing(new)}
 
     def feed(self, limit=20):
+        """The latest battles on this server (kept in memory only; a restart starts it afresh)."""
         try:
-            limit = int(limit)
+            limit = max(1, min(30, int(limit)))
         except (TypeError, ValueError):
             limit = 20
-        rows = self.db.query('SELECT p.name, b.level, b.boss, b.won, b.clear, b.time, b.gold, b.created '
-                             'FROM battles b JOIN players p ON p.id = b.player_id ORDER BY b.id DESC LIMIT ?',
-                             (max(1, min(50, int(limit))),))
-        return [{'name': r['name'], 'level': r['level'], 'boss': r['boss'], 'won': bool(r['won']),
-                 'clear': bool(r['clear']), 'time': round(r['time'], 1), 'gold': r['gold'], 'at': r['created']}
-                for r in rows]
+        return list(self.recent)[:limit]
 
     # ------------------------------------------------------------ leaderboards
     def _changed(self):
-        with self.cache_lock:
+        with self.lock:
             self.version += 1
-            self.cache = None
 
-    def _table(self):
-        """Every player's totals, rebuilt after a change (or every 5 s, for
-        changes made by another server sharing the same online database)."""
-        with self.cache_lock:
-            if self.cache and self.cache[0] == self.version and self.clock() - self.cache[1] < 5:
-                return self.cache[2]
-        players = self.db.query('SELECT id, name, warrior_level, gold_held FROM players')
-        agg = {r['player_id']: r for r in self.db.query(
-            'SELECT player_id, COUNT(*) AS n, SUM(won) AS w, SUM(gold) AS g, SUM(xp) AS x, SUM(flawless) AS f '
-            'FROM battles GROUP BY player_id')}
-        best = collections.defaultdict(dict)
-        for r in self.db.query('SELECT player_id, level, MIN(time) AS t FROM battles WHERE clear = 1 '
-                               'GROUP BY player_id, level'):
-            best[r['player_id']][int(r['level'])] = round(float(r['t']), 1)
-        table = []
-        for p in players:
-            a = agg.get(p['id'], {})
-            n, w = int(a.get('n') or 0), int(a.get('w') or 0)
-            gold, xp = int(a.get('g') or 0), int(a.get('x') or 0)
-            b = best.get(p['id'], {})
-            table.append({'id': p['id'], 'name': p['name'], 'level': p['warrior_level'], 'held': p['gold_held'],
-                          'points': gold + xp, 'gold': gold, 'xp': xp, 'wins': w, 'losses': n - w,
-                          'battles': n, 'flawless': int(a.get('f') or 0),
-                          'winRate': round(100 * w / n, 1) if n else 0.0,
-                          'winScore': round(100 * wilson(w, n), 1),
-                          'cleared': len(b), 'totalTime': round(sum(b.values()), 1), 'best': b})
-        with self.cache_lock:
-            self.cache = (self.version, self.clock(), table)
-        return table
+    COLS = ('id, name, warrior_level, gold_held, points, gold_won, xp_won, wins, battles, flawless, '
+            'win_score, cleared, total_best')
+    ORDER = {
+        'points': ('1 = 1', 'points DESC, wins DESC, name_key', ('points',)),
+        'gold': ('1 = 1', 'gold_won DESC, points DESC, name_key', ('gold_won',)),
+        'wins': ('battles > 0', 'win_score DESC, wins DESC, name_key', ('win_score',)),
+        'speed': ('cleared > 0', 'cleared DESC, total_best ASC, name_key', ('cleared', 'total_best')),
+    }
 
     @staticmethod
-    def _order(board, level):
-        """(filter, sort key, the value that decides a tie) for a board."""
-        if board == 'gold':
-            return (lambda r: True), (lambda r: (-r['gold'], -r['points'], r['name'].lower())), (lambda r: r['gold'])
-        if board == 'wins':
-            return ((lambda r: r['battles'] > 0), (lambda r: (-r['winScore'], -r['wins'], r['name'].lower())),
-                    (lambda r: r['winScore']))
-        if board == 'speed' and level:
-            return ((lambda r: level in r['best']), (lambda r: (r['best'][level], r['name'].lower())),
-                    (lambda r: r['best'][level]))
-        if board == 'speed':
-            return ((lambda r: r['cleared'] > 0), (lambda r: (-r['cleared'], r['totalTime'], r['name'].lower())),
-                    (lambda r: (r['cleared'], r['totalTime'])))
-        return (lambda r: True), (lambda r: (-r['points'], -r['wins'], r['name'].lower())), (lambda r: r['points'])
-
-    def ranked(self, board='points', level=0):
-        keep, key, tie = self._order(board, level)
-        rows = sorted((r for r in self._table() if keep(r)), key=key)
-        out, last, rank = [], object(), 0
-        for i, r in enumerate(rows):
-            v = tie(r)
-            if v != last:
-                rank, last = i + 1, v
-            out.append({**r, 'rank': rank})
+    def _row(r, best=None):
+        n, w = int(r['battles']), int(r['wins'])
+        out = {'id': r['id'], 'name': r['name'], 'level': r['warrior_level'], 'held': r['gold_held'],
+               'points': r['points'], 'gold': r['gold_won'], 'xp': r['xp_won'], 'wins': w, 'losses': n - w,
+               'battles': n, 'flawless': r['flawless'], 'winRate': round(100 * w / n, 1) if n else 0.0,
+               'winScore': float(r['win_score']), 'cleared': r['cleared'], 'totalTime': float(r['total_best'])}
+        if best is not None:
+            out['best'] = float(best)
         return out
+
+    def _top(self, board, level):
+        """The top 50 of a board and how many are on it: from memory when fresh (15 s, or until this
+        server records a change), else two indexed queries."""
+        key = (board, level)
+        hit = self.boards.get(key)
+        if hit and hit[0] == self.version and self.clock() - hit[1] < 15:
+            return hit[2], hit[3]
+        if board == 'speed' and level:
+            rows = self.db.query(f'SELECT p.{self.COLS.replace(", ", ", p.")}, b.time AS best FROM best_times b '
+                                 'JOIN players p ON p.id = b.player_id WHERE b.level = ? ORDER BY b.time, p.name_key LIMIT ?',
+                                 (level, TOP))
+            total = self.db.one('SELECT COUNT(*) AS n FROM best_times WHERE level = ?', (level,))['n']
+            rows = [self._row(r, r['best']) for r in rows]
+            tie = lambda r: r['best']
+        else:
+            where, order, keys = self.ORDER[board]
+            rows = [self._row(r) for r in self.db.query(f'SELECT {self.COLS} FROM players WHERE {where} ORDER BY {order} LIMIT ?',
+                                                        (TOP,))]
+            total = self.db.one(f'SELECT COUNT(*) AS n FROM players WHERE {where}')['n']
+            names = {'points': 'points', 'gold_won': 'gold', 'win_score': 'winScore', 'cleared': 'cleared',
+                     'total_best': 'totalTime'}
+            tie = lambda r: tuple(r[names[k]] for k in keys)
+        last, rank = object(), 0
+        for i, r in enumerate(rows):
+            if tie(r) != last:
+                rank, last = i + 1, tie(r)
+            r['rank'] = rank
+        self.boards[key] = (self.version, self.clock(), rows, int(total))
+        return rows, int(total)
+
+    def _rank(self, board, r, level=0, best=None):
+        """A player's place on a board: how many are strictly ahead, plus one."""
+        if board == 'points':
+            sql, p = 'points > ?', (r['points'],)
+        elif board == 'gold':
+            sql, p = 'gold_won > ?', (r['gold_won'],)
+        elif board == 'wins':
+            if not r['battles']:
+                return None
+            sql, p = 'battles > 0 AND win_score > ?', (r['win_score'],)
+        elif level:
+            if best is None:
+                return None
+            return self.db.one('SELECT COUNT(*) AS n FROM best_times WHERE level = ? AND time < ?', (level, best))['n'] + 1
+        else:
+            if not r['cleared']:
+                return None
+            sql, p = 'cleared > ? OR (cleared = ? AND total_best < ?)', (r['cleared'], r['cleared'], r['total_best'])
+        return self.db.one(f'SELECT COUNT(*) AS n FROM players WHERE {sql}', p)['n'] + 1
+
+    def _standing(self, r, full=False):
+        """Points and the place on the points board (one count); `full` adds the other boards."""
+        ranks = {'points': self._rank('points', r)}
+        if full:
+            for board in ('gold', 'wins', 'speed'):
+                ranks[board] = self._rank(board, r)
+        n, w = int(r['battles']), int(r['wins'])
+        return {'ranks': ranks, 'points': r['points'], 'gold': r['gold_won'], 'xp': r['xp_won'], 'wins': w,
+                'losses': n - w, 'winRate': round(100 * w / n, 1) if n else 0.0, 'winScore': float(r['win_score']),
+                'cleared': r['cleared'], 'totalTime': float(r['total_best'])}
 
     def leaderboard(self, board='points', level=0, me=None):
         if board not in BOARDS:
             raise ApiError(400, 'Unknown board.')
-        level = int(level) if str(level).isdigit() else 0
-        rows = self.ranked(board, level)
-        pub = lambda r: {k: v for k, v in r.items() if k != 'id'} | {'me': r['id'] == me,
-                                                                    'best': {str(k): t for k, t in r['best'].items()}}
+        level = int(level) if str(level).isdigit() and board == 'speed' else 0
+        rows, total = self._top(board, level)
+        pub = lambda r: {k: v for k, v in r.items() if k != 'id'} | {'me': r['id'] == me}
         mine = next((r for r in rows if r['id'] == me), None)
-        return {'board': board, 'level': level, 'version': self.version, 'total': len(rows),
-                'players': len(self._table()), 'rows': [pub(r) for r in rows[:TOP]],
-                'me': pub(mine) if mine else None,
+        if me and not mine:                                   # outside the top 50: one row, one count
+            r = self.db.one(f'SELECT {self.COLS}, (SELECT time FROM best_times WHERE player_id = ? AND level = ?) AS best '
+                            'FROM players WHERE id = ?', (me, level, me))
+            if r:
+                rank = self._rank(board, r, level, r['best'])
+                if rank:
+                    mine = {**self._row(r, r['best'] if level else None), 'rank': rank}
+        return {'board': board, 'level': level, 'version': self.version, 'total': total,
+                'rows': [pub(r) for r in rows], 'me': pub(mine) if mine else None,
                 'online': self.live.clients if self.live else 0}
-
-    def standing(self, pid):
-        """A player's points and place on each board."""
-        out = {'ranks': {}}
-        for board in BOARDS:
-            rows = self.ranked(board)
-            mine = next((r for r in rows if r['id'] == pid), None)
-            out['ranks'][board] = mine['rank'] if mine else None
-            if board == 'points':
-                out['of'] = len(rows)
-                if mine:
-                    out.update({k: mine[k] for k in ('points', 'gold', 'xp', 'wins', 'losses', 'winRate',
-                                                     'winScore', 'cleared', 'totalTime')})
-        return out
 
     def health(self, deep=False):
         """The host's health check. Only `deep` touches the database, so frequent

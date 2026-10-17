@@ -75,7 +75,7 @@ class ServerTest(unittest.TestCase):
         if url:
             import psycopg
             with psycopg.connect(url, autocommit=True) as conn:
-                conn.execute('DROP TABLE IF EXISTS battles, saves, sessions, players CASCADE')
+                conn.execute('DROP TABLE IF EXISTS battles, saves, sessions, best_times, players CASCADE')
         cls.server = serve.make_server(cls.settings, 0)
         cls.port = cls.server.server_address[1]
         assert cls.port != cls.settings.port, "the tests must never share the game's own port"
@@ -229,7 +229,7 @@ class ServerTest(unittest.TestCase):
         me = c.call('GET', '/api/me')[1]['player']
         self.assertEqual((me['level'], me['gold']), (6, 1234))
         self.assertEqual(c.call('PUT', '/api/save', {'save': [1, 2]})[0], 400)
-        self.assertEqual(c.call('PUT', '/api/save', {'save': {'x': 'y' * 300_000}})[0], 413)
+        self.assertEqual(c.call('PUT', '/api/save', {'save': {'x': 'y' * 220_000}})[0], 413)
         self.assertEqual(self.client().call('GET', '/api/save')[0], 401)
 
     # ------------------------------------------------------------ battles and boards
@@ -275,8 +275,37 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(self.client().call('GET', '/api/leaderboard?board=nope')[0], 400)
         feed = self.client().call('GET', '/api/feed?limit=3')[1]['feed']
         self.assertEqual((len(feed), feed[0]['name'], feed[0]['won']), (3, 'Tyrion', False))
-        st = jon.call('GET', '/api/me')[1]['player']['standing']
+        st = jon.call('GET', '/api/me?full=1')[1]['player']['standing']
         self.assertEqual((st['points'], st['wins'], st['ranks']['points'], st['ranks']['wins'] > 1), (750, 3, 1, True))
+
+    def test_migration_from_battle_rows(self):
+        import sqlite3
+        from gameserver.db import Database
+        path = os.path.join(self.tmp, 'old.sqlite3')
+        c = sqlite3.connect(path)
+        c.executescript('''
+          CREATE TABLE players (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, name_key TEXT NOT NULL UNIQUE,
+            pass_hash TEXT NOT NULL, created REAL NOT NULL, last_seen REAL NOT NULL,
+            warrior_level INTEGER NOT NULL DEFAULT 1, gold_held INTEGER NOT NULL DEFAULT 0);
+          CREATE TABLE saves (player_id INTEGER PRIMARY KEY, data TEXT NOT NULL, saved_at REAL NOT NULL);
+          CREATE TABLE battles (id INTEGER PRIMARY KEY AUTOINCREMENT, player_id INTEGER NOT NULL, client_id TEXT NOT NULL,
+            level INTEGER NOT NULL, boss TEXT NOT NULL, won INTEGER NOT NULL, clear INTEGER NOT NULL, time REAL NOT NULL,
+            gold INTEGER NOT NULL, xp INTEGER NOT NULL, flawless INTEGER NOT NULL, created REAL NOT NULL);
+          INSERT INTO players (name, name_key, pass_hash, created, last_seen) VALUES ('Old Bear', 'old bear', 'x', 1, 1);
+          INSERT INTO saves VALUES (1, '{"level": 3}', 5);
+          INSERT INTO battles (player_id, client_id, level, boss, won, clear, time, gold, xp, flawless, created) VALUES
+            (1, 'a', 1, 'ember_wyrm', 1, 1, 120, 100, 90, 0, 1), (1, 'b', 1, 'ember_wyrm', 1, 1, 95, 40, 30, 1, 2),
+            (1, 'c', 2, 'emberwing', 0, 0, 30, 0, 0, 0, 3);''')
+        c.commit()
+        c.close()
+        db = Database(Settings(env_file='', overrides={'DS_DB_PATH': path, 'DATABASE_URL': ''}))
+        p = db.one('SELECT * FROM players WHERE id = 1')
+        self.assertEqual((p['battles'], p['wins'], p['gold_won'], p['xp_won'], p['points'], p['flawless'], p['cleared'],
+                          p['total_best'], p['save_data'], p['saved_at']), (3, 2, 140, 120, 260, 1, 1, 95.0, '{"level": 3}', 5))
+        self.assertFalse(db.has_table('battles') or db.has_table('saves'))       # the per-battle rows are gone
+        self.assertEqual(db.one('SELECT time FROM best_times WHERE player_id = 1 AND level = 1')['time'], 95.0)
+        db.close()
+        Database(Settings(env_file='', overrides={'DS_DB_PATH': path, 'DATABASE_URL': ''})).close()   # twice is harmless
 
     def test_wilson(self):
         self.assertEqual(wilson(0, 0), 0)

@@ -66,7 +66,8 @@ export class Game {
     if (this.clips) this.clips.stopAll();
     // the level's dragons and scenery arrive the first time it is played
     const cfg = getLevel(id);
-    const need = cfg && this.assets.pending ? this.assets.pending(levelArt(cfg, this.assets.manifest)) : [];
+    const need = cfg && this.assets.pending
+      ? this.assets.pending(levelArt(cfg, this.assets.manifest, this.progression.data.equipped)) : [];
     if (need.length) { this.loadLevelArt(id, need); return; }
     try {
       this.levels.start(id);
@@ -103,7 +104,7 @@ export class Game {
   prefetch(id) {
     const cfg = getLevel(id);
     if (!cfg || cfg.status !== 'playable' || !this.assets.pending || this.prefetching === id) return;
-    const need = this.assets.pending(levelArt(cfg, this.assets.manifest));
+    const need = this.assets.pending(levelArt(cfg, this.assets.manifest, this.progression.data.equipped));
     if (!need.length) return;
     this.prefetching = id;
     this.assets.loadGroups(need, () => {}, { workers: 4 }).finally(() => { if (this.prefetching === id) this.prefetching = null; });
@@ -175,6 +176,7 @@ export class Game {
 
   onLevelEnd(outcome, result) {
     this.mode = 'results';
+    this.online.syncNow();
     if (outcome === 'won' && result && result.saga) this.ui.showSagaComplete(result);
     else if (outcome === 'won') this.ui.showVictory(result);
     else this.ui.showDefeat(this.levels.saga);

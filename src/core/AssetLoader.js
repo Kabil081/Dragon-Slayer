@@ -48,7 +48,7 @@ export class AssetLoader {
           if (v && a.variants && !a.variants.includes(v)) continue;   // weapon-style animations
           let path = g.sheet_pattern.replace('{anim}', anim);
           if (v) path = path.replace('{variant}', v);
-          need(key, `${key} ${v ? v + ' ' : ''}${anim}`, path);
+          need(v ? `${key}:${v}` : key, `${key} ${v ? v + ' ' : ''}${anim}`, path);     // one group per weapon
         }
       }
     }

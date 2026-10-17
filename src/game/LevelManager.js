@@ -20,10 +20,16 @@ import { Weapon } from './Weapon.js';
 // phase banners, the arena gate, weapon caches, firelight and heat cracks.
 
 // The art a level needs beyond the shared set (manifest group keys, see
-// core/AssetLoader.js): its scenery and every sprite its enemies use (a
-// second life, a duelist). It loads when the level is first played.
-export function levelArt(cfg, manifest) {
+// core/AssetLoader.js): its scenery, every sprite its enemies use (a second
+// life, a duelist), and the warrior with each weapon he can hold there (the
+// equipped one, the battlefield finds, Frostbrand, sheathed for the
+// Frostpiercer). It loads when the level is first played.
+export function levelArt(cfg, manifest, equipped = null) {
   const out = new Set();
+  const held = [equipped, ...(cfg.pickups || []).map(p => p.weapon)];
+  if (cfg.rules && cfg.rules.frostbrand) held.push('frostbrand');
+  if (cfg.rules && cfg.rules.frostpiercer) held.push('unarmed');
+  for (const w of held) if (w) out.add('warrior:' + w);
   for (const b of [cfg.background, ...(cfg.stages || []).map(st => st.background)]) if (b) out.add('bg:' + b);
   const enemies = [cfg.boss && cfg.boss.enemy, ...(cfg.bosses || []).map(b => b.enemy),
                    ...(cfg.stages || []).flatMap(st => [st.boss && st.boss.enemy, st.duel])].filter(Boolean);
@@ -38,7 +44,8 @@ export function levelArt(cfg, manifest) {
 
 // Every group that waits for its level (the rest loads at boot).
 export function deferredArt(manifest) {
-  return [...new Set(LEVELS.flatMap(cfg => levelArt(cfg, manifest)))];
+  const warrior = ((manifest.warrior && manifest.warrior.variants) || []).map(v => 'warrior:' + v);
+  return [...new Set([...warrior, ...LEVELS.flatMap(cfg => levelArt(cfg, manifest))])];
 }
 
 export class LevelManager {
