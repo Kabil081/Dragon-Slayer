@@ -91,7 +91,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return self.client_address[0] in LOCAL and not forwarded
 
     def is_https(self):
-        return self.settings.trust_proxy and self.headers.get('X-Forwarded-Proto', '').lower() == 'https'
+        if not self.settings.trust_proxy:
+            return False
+        # one proxy or a chain of them (Cloudflare in front of Render): "https" or "https, https"
+        proto = self.headers.get('X-Forwarded-Proto', '').lower().split(',')[0].strip()
+        fwd = self.headers.get('Forwarded', '').lower()
+        return proto == 'https' or 'proto=https' in fwd or '"scheme":"https"' in self.headers.get('Cf-Visitor', '').replace(' ', '')
 
     def route(self):
         return urllib.parse.urlsplit(self.path)

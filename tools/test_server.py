@@ -144,6 +144,18 @@ class ServerTest(unittest.TestCase):
         self.assertIn('players', json.loads(r.read()))
         self.assertIsNone(r.getheader('Strict-Transport-Security'))       # plain http here
         c.close()
+        svc = self.server.service
+        svc.settings.trust_proxy = True                                    # behind a host's proxy chain
+        try:
+            for h in ({'X-Forwarded-Proto': 'https, https'}, {'Cf-Visitor': '{"scheme":"https"}'}):
+                c = http.client.HTTPConnection('127.0.0.1', self.port, timeout=10)
+                c.request('GET', '/api/health', headers=h)
+                r = c.getresponse()
+                r.read()
+                self.assertEqual(r.getheader('Strict-Transport-Security'), 'max-age=31536000', h)
+                c.close()
+        finally:
+            svc.settings.trust_proxy = False
 
     def test_env_file(self):
         p = os.path.join(self.tmp, 'sample.env')
