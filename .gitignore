@@ -1,6 +1,6 @@
 # private settings and the local database
 .env
-data/
+/data/
 *.sqlite3
 *.sqlite3-*
 __pycache__/
