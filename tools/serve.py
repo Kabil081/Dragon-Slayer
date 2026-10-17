@@ -91,6 +91,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return self.client_address[0] in LOCAL and not forwarded
 
     def is_https(self):
+        if self.settings.https:
+            return True
         if not self.settings.trust_proxy:
             return False
         # one proxy or a chain of them (Cloudflare in front of Render): "https" or "https, https"

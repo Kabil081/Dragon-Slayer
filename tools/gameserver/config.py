@@ -57,6 +57,8 @@ class Settings:
         self.session_days = max(1.0, float(get('DS_SESSION_DAYS', '30')))
         self.cookie_secure = get('DS_COOKIE_SECURE', 'auto').strip().lower()   # auto | 1 | 0
         self.trust_proxy = flag('DS_TRUST_PROXY', '1' if hosted else '0')
+        # the host always serves the site over https (Render does, and says so with RENDER=true)
+        self.https = flag('DS_HTTPS', '1' if os.environ.get('RENDER') else '0')
         self.allow_signup = flag('DS_ALLOW_SIGNUP', '1')
         self.max_live = int(get('DS_MAX_LIVE', '200'))
         self.log = get('DS_LOG', 'quiet' if hosted else 'all').strip().lower()   # all | quiet (errors and API calls)

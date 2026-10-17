@@ -156,6 +156,13 @@ class ServerTest(unittest.TestCase):
                 c.close()
         finally:
             svc.settings.trust_proxy = False
+        svc.settings.https = True                                          # DS_HTTPS=1 / RENDER=true
+        try:
+            c = self.client()
+            c.call('POST', '/api/signup', {'name': 'Secure One', 'password': pw('Secure One')})
+            self.assertIn('Secure', c.last_cookie)
+        finally:
+            svc.settings.https = False
 
     def test_env_file(self):
         p = os.path.join(self.tmp, 'sample.env')
