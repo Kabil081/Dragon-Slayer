@@ -253,4 +253,6 @@ Sprite notes:
 - `.env` holds the owner's Neon DATABASE_URL (tables created). NEVER run `tools/test_server.py` with DS_TEST_DATABASE_URL pointing at Neon (it drops tables).
 - Art loads per level (AssetLoader groups, `levelArt`/`deferredArt` in LevelManager.js, Game.loadLevelArt/prefetch): boot 14 MB instead of 178 MB. ?smoke/?lab load everything.
 - Server: no-cache + Last-Modified, gzip text, CSP/HSTS, DS_LOG=quiet, SIGTERM, shallow /api/health (?deep=1 hits DB), Neon connect retries.
+- GitHub: https://github.com/Kabil081/Dragon-Slayer (public). `assets/sprites/*/frames/` is git-ignored (build leftovers). Pushes over this PC's
+  connection fail above ~30 MB: commit art in small batches. With `PORT` set the server defaults to 0.0.0.0, trusted proxy, quiet logs.
 - Not yet verified: `docker build` (Docker Desktop would not start here). Next: push to GitHub (owner), Render Blueprint (owner pastes DATABASE_URL). See HOSTING.md.

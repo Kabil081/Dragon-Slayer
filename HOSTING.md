@@ -43,6 +43,11 @@ The repository is ready for Render (`render.yaml`, `Dockerfile`):
    value, `DATABASE_URL`: paste the Neon connection string from your `.env`.
 3. Wait for the build; the game is at `https://dragonslayer-XXXX.onrender.com`. Every push redeploys.
 
+Or as a plain Python web service (New → Web Service): Root Directory empty, Build Command
+`pip install -r requirements.txt`, Start Command `python tools/serve.py`, Health Check Path
+`/api/health`, and the environment variable `DATABASE_URL`. On a host (it sets `PORT`) the server
+listens publicly, trusts the host's proxy and logs quietly by itself.
+
 The free plan sleeps after 15 idle minutes (the first visit then takes about a minute), and Neon's free
 database sleeps too (the server retries while it wakes).
 
